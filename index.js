@@ -20,7 +20,18 @@ const {
 } = require('@napi-rs/canvas');
 
 const fs = require('fs');
+const http = require('http');
 
+// Dummy HTTP server to satisfy Render's port binding requirement
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running!\n');
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Dummy server listening on port ${PORT}`);
+});
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
