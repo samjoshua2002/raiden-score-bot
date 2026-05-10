@@ -1,6 +1,10 @@
 require('dotenv').config();
 
-const { REST, Routes, SlashCommandBuilder } = require('discord.js');
+const {
+  REST,
+  Routes,
+  SlashCommandBuilder
+} = require('discord.js');
 
 const commands = [
 
@@ -12,24 +16,54 @@ const commands = [
         .setName('user')
         .setDescription('Select a user')
         .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('raiden')
+    .setDescription('Talk with Raiden Shogun')
+    .addStringOption(option =>
+      option
+        .setName('message')
+        .setDescription('Your message')
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('natsu')
+    .setDescription('Talk with Natsu Dragneel')
+    .addStringOption(option =>
+      option
+        .setName('message')
+        .setDescription('Your message')
+        .setRequired(true)
     )
 
 ].map(command => command.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+const rest = new REST({
+  version: '10'
+}).setToken(process.env.TOKEN);
 
 (async () => {
 
   try {
 
-    console.log('Registering slash commands...');
-
-    await rest.put(
-      Routes.applicationCommands('1502980944079093884'),
-      { body: commands }
+    console.log(
+      'Registering slash commands...'
     );
 
-    console.log('Slash commands registered.');
+    await rest.put(
+      Routes.applicationCommands(
+        '1502980944079093884'
+      ),
+      {
+        body: commands
+      }
+    );
+
+    console.log(
+      'Slash commands registered.'
+    );
 
   } catch (error) {
 
