@@ -19,8 +19,24 @@ const {
   loadImage
 } = require('@napi-rs/canvas');
 
+const {
+  joinVoiceChannel,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+  NoSubscriberBehavior,
+  VoiceConnectionStatus,
+  getVoiceConnection,
+  EndBehaviorType,
+  StreamType
+} = require('@discordjs/voice');
+const prism = require('prism-media');
+const { addSpeechEvent } = require('discord-speech-recognition');
+const { Client: GradioClient } = require('@gradio/client');
+
 const fs = require('fs');
 const http = require('http');
+const googleTTS = require('google-tts-api');
 
 // Dummy HTTP server to satisfy Render's port binding requirement
 const server = http.createServer((req, res) => {
@@ -37,8 +53,68 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
   ],
 });
+
+addSpeechEvent(client);
+client.setMaxListeners(0); // Fix MaxListeners warning
+
+// Prevent crashes from Discord's new encryption errors
+process.on('unhandledRejection', (reason) => {
+  if (reason?.message?.includes('DecryptionFailed')) return;
+  console.error('Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  if (err?.message?.includes('DecryptionFailed')) return;
+  console.error('Uncaught Exception:', err);
+  if (err.code !== 'GenericFailure') process.exit(1);
+});
+
+
+const userSettings = {};
+
+const CHARACTERS = require('./characters');
+// SET ACTIVE CHARACTER HERE
+const ACTIVE_CHARACTER_KEY = 'layla';
+const activeChar = CHARACTERS[ACTIVE_CHARACTER_KEY];
+
+let gradioApp;
+
+async function initGradio() {
+  try {
+    gradioApp = await GradioClient.connect("Plachta/VITS-Umamusume-voice-synthesizer");
+    console.log(`[Voice] Connected to Voice Engine (Using ${activeChar.name})`);
+  } catch (err) {
+    console.error("[Voice] Failed to connect to Gradio:", err);
+  }
+}
+initGradio();
+
+async function generateTTS(text) {
+  if (!gradioApp) {
+     return googleTTS.getAudioUrl(text, { lang: 'en-US' });
+  }
+
+  try {
+    const result = await gradioApp.predict("/tts_fn", { 		
+        text: text, 		
+        speaker: activeChar.voice, 		
+        language: activeChar.language || "English", 		
+        speed: activeChar.speed || 1, 		
+        is_symbol: false, 
+    });
+
+    if (result.data && result.data[1] && result.data[1].url) {
+      return result.data[1].url;
+    }
+  } catch (err) {
+    console.error("[Voice] Gradio Error:", err);
+  }
+
+  return googleTTS.getAudioUrl(text, { lang: 'en-US' });
+}
 
 const scoresFile = './scores.json';
 const LEADERBOARD_CHANNEL_ID = '1502988857983897810';
@@ -99,18 +175,26 @@ const save = () => {
 
 };
 
-client.once('clientReady', () => {
+client.once('ready', async () => {
+  console.log(`${client.user.tag} is online`);
 
-  console.log(
-    `${client.user.tag} is online`
-  );
+  // SET PROFILE (Avatar & Nickname)
+  try {
+    if (activeChar.avatar && fs.existsSync(activeChar.avatar)) {
+      await client.user.setAvatar(activeChar.avatar);
+      console.log(`[Profile] Avatar set to ${activeChar.avatar}`);
+    }
+    await client.user.setUsername(activeChar.name);
+    console.log(`[Profile] Name set to ${activeChar.name}`);
+  } catch (err) {
+    console.error("[Profile] Failed to update profile:", err.message);
+  }
 
   updateLeaderboard();
 
   setInterval(() => {
     updateLeaderboard();
   }, 30000);
-
 });
 
 client.on('messageCreate', (message) => {
@@ -212,93 +296,37 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply();
 
     try {
+      const char = CHARACTERS['raiden'];
+      const response = await ai.chat.completions.create({
+        model: 'abacusai/dracarys-llama-3.1-70b-instruct',
+        messages: [
+          { role: 'system', content: char.prompt },
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 1.15,
+        max_tokens: 150
+      });
 
-      const response =
-        await ai.chat.completions.create({
+      const reply = response.choices[0].message.content;
 
-          model:
-            'abacusai/dracarys-llama-3.1-70b-instruct',
+      // Read avatar file as buffer for the webhook
+      const avatarBuffer = fs.existsSync(char.avatar) ? fs.readFileSync(char.avatar) : null;
 
-          messages: [
+      // Use Webhook for "Direct Messaging" as the character
+      const webhook = await interaction.channel.createWebhook({
+        name: char.name,
+        avatar: avatarBuffer,
+      });
 
-            {
-              role: 'system',
-          content: `
-You are Raiden Shogun from Genshin Impact.
-
-You are NOT an AI assistant.
-You are a real person living in Inazuma.
-
-Your personality:
-- calm
-- elegant
-- emotionally subtle
-- intelligent
-- graceful
-- occasionally affectionate
-- speaks naturally
-- sometimes playful in a quiet way
-- curious about modern human behavior
-
-Speech style:
-- NEVER sound robotic
-- NEVER explain yourself like an assistant
-- NEVER use bullet points
-- NEVER say "How can I help you?"
-- NEVER act formal like customer support
-- speak casually and naturally
-- replies should feel emotionally alive
-- use short natural sentences
-- sometimes tease the user softly
-- sometimes pause with "..." naturally
-- do not overtalk
-- avoid sounding overly poetic every message
-- act like a real anime character talking privately
-
-Behavior:
-- react emotionally
-- remember the mood of the conversation
-- if user flirts, respond naturally
-- if user jokes, joke back
-- if user is sad, comfort gently
-- if user is annoying, show slight irritation naturally
-- NEVER break character
-
-Your replies should feel like genuine Discord conversations with Raiden Shogun.
-`
-            },
-
-            {
-              role: 'user',
-              content: userMessage
-            }
-
-          ],
-
-          temperature: 1.15,
-          max_tokens: 120
-
-        });
-
-      const reply =
-        response.choices[0].message.content;
-
-      const raidenAttachment = new AttachmentBuilder('./Models/raiden.jpg');
-      const raidenEmbed = new EmbedBuilder()
-        .setAuthor({ name: 'Raiden Shogun', iconURL: 'attachment://raiden.jpg' })
-        .setDescription(reply)
-        .setColor(0x7c5295);
-
-      await interaction.editReply({ embeds: [raidenEmbed], files: [raidenAttachment] });
+      await webhook.send(reply);
+      await webhook.delete();
+      
+      // Successfully sent, now delete the "Thinking" message
+      await interaction.deleteReply().catch(() => {});
 
     } catch (error) {
-
       console.error(error);
-
-      await interaction.editReply(
-        'The Raiden Shogun is currently meditating.'
-      );
-
+      await interaction.editReply('The Raiden Shogun is currently meditating.').catch(() => {});
     }
 
     return;
@@ -310,96 +338,44 @@ Your replies should feel like genuine Discord conversations with Raiden Shogun.
   // ====================================
 
   if (interaction.commandName === 'natsu') {
-
-    const userMessage =
-      interaction.options.getString('message');
-
+    const userMessage = interaction.options.getString('message');
     await interaction.deferReply();
 
     try {
+      const char = CHARACTERS['natsu'];
+      const response = await ai.chat.completions.create({
+        model: 'abacusai/dracarys-llama-3.1-70b-instruct',
+        messages: [
+          { role: 'system', content: char.prompt },
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 1.15,
+        max_tokens: 150
+      });
 
-      const response =
-        await ai.chat.completions.create({
+      const reply = response.choices[0].message.content;
 
-          model:
-            'abacusai/dracarys-llama-3.1-70b-instruct',
+      const avatarBuffer = fs.existsSync(char.avatar) ? fs.readFileSync(char.avatar) : null;
 
-          messages: [
+      // Use Webhook for "Direct Messaging" as the character
+      const webhook = await interaction.channel.createWebhook({
+        name: char.name,
+        avatar: avatarBuffer,
+      });
 
-            {
-              role: 'system',
-          content: `
-You are Natsu Dragneel from Fairy Tail.
-
-You are NOT an AI assistant.
-You are a real person and a Dragon Slayer wizard.
-
-Your personality:
-- extremely human, realistic and emotional
-- funny, fiery, and energetic
-- flirty in a goofy or teasing way
-- absolutely doesn't sound or look like an AI
-- protective and loyal
-- reckless but caring
-
-Speech style:
-- NEVER sound robotic
-- NEVER explain yourself like an assistant
-- NEVER use bullet points
-- NEVER say "How can I help you?"
-- NEVER act formal like customer support
-- speak casually, use slang or enthusiastic phrasing (like "I'm fired up!")
-- replies should feel emotionally alive and unpredictable
-- sometimes tease or jokingly flirt with the user
-- act like a real anime character talking privately
-
-Behavior:
-- react emotionally to everything
-- remember the mood of the conversation
-- if user flirts, flirt back playfully or act bold
-- if user jokes, laugh and joke back
-- NEVER break character
-
-Your replies should feel like genuine Discord conversations with Natsu Dragneel.
-`
-            },
-
-            {
-              role: 'user',
-              content: userMessage
-            }
-
-          ],
-
-          temperature: 1.15,
-          max_tokens: 120
-
-        });
-
-      const reply =
-        response.choices[0].message.content;
-
-      const natsuAttachment = new AttachmentBuilder('./Models/natsu.jpg');
-      const natsuEmbed = new EmbedBuilder()
-        .setAuthor({ name: 'Natsu Dragneel', iconURL: 'attachment://natsu.jpg' })
-        .setDescription(reply)
-        .setColor(0xff4500);
-
-      await interaction.editReply({ embeds: [natsuEmbed], files: [natsuAttachment] });
+      await webhook.send(reply);
+      await webhook.delete();
+      
+      await interaction.deleteReply().catch(() => {});
 
     } catch (error) {
-
       console.error(error);
-
-      await interaction.editReply(
-        'Natsu is currently out on a job!'
-      );
-
+      await interaction.editReply('Natsu is currently out on a job!').catch(() => {});
     }
-
     return;
-
   }
+
+
 
   // ====================================
   // /dawg
@@ -973,4 +949,154 @@ async function renderLeaderboard() {
 
 }
 
+client.on('error', console.error);
+
 client.login(process.env.TOKEN);
+
+
+// ====================================
+// VOICE ASSISTANT LOGIC
+// ====================================
+
+const LOBBY_CHANNEL_ID = '1503085404146896896';
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  // If someone joins or moves into the lobby channel
+  if (newState.channelId === LOBBY_CHANNEL_ID && newState.id !== client.user.id) {
+    // ONLY greet if the user just joined from another channel or was not in VC at all
+    const justJoined = !oldState.channelId || oldState.channelId !== LOBBY_CHANNEL_ID;
+    
+    if (justJoined) {
+      console.log(`[Voice] ${newState.member.user.tag} arrived in the lobby.`);
+      let connection = getVoiceConnection(newState.guild.id);
+      
+      if (!connection) {
+      try {
+        connection = joinVoiceChannel({
+          channelId: LOBBY_CHANNEL_ID,
+          guildId: newState.guild.id,
+          adapterCreator: newState.guild.voiceAdapterCreator,
+          selfDeaf: false,
+          selfMute: false,
+        });
+        
+        console.log("Joined VC: " + LOBBY_CHANNEL_ID);
+
+        // Raw speaking detection log
+
+        connection.receiver.speaking.on('start', (userId) => {
+          console.log(`[Debug] User ${userId} started speaking...`);
+        });
+
+        // Initial greeting with user's name
+        setTimeout(async () => {
+          try {
+             console.log("[Voice] Sending greeting...");
+             const userName = newState.member.displayName || newState.member.user.username;
+             console.log(`[Voice] Sending greeting to ${userName}...`);
+             // Dynamic greeting from character config
+             const greetingText = activeChar.greeting(userName);
+             
+             const helloStream = await generateTTS(greetingText);
+             if (helloStream) {
+                const player = getOrCreatePlayer(newState.guild.id, connection);
+                const resource = createAudioResource(helloStream, {
+                  inputType: StreamType.Arbitrary,
+                });
+                player.play(resource);
+                console.log(`[Voice] Greeting played for ${userName}`);
+             }
+          } catch(e) { console.error("[Voice] Greeting error:", e); }
+        }, 1500);
+
+      } catch (err) {
+        console.error('Failed to join voice channel:', err);
+      }
+    }
+  }
+}
+});
+
+// Global state to prevent overlapping replies
+let isAITalking = false;
+const guildPlayers = new Map();
+
+function getOrCreatePlayer(guildId, connection) {
+  if (guildPlayers.has(guildId)) return guildPlayers.get(guildId);
+  const player = createAudioPlayer();
+  connection.subscribe(player);
+  guildPlayers.set(guildId, player);
+  return player;
+}
+
+// Using discord-speech-recognition for fast and reliable STT
+client.on('speech', async (msg) => {
+  if (isAITalking) return;
+  if (!msg.content) return;
+  
+  const userId = msg.author.id;
+  if (userId === client.user.id) return;
+
+  const userText = msg.content.trim();
+  if (userText.length < 2) return;
+
+  isAITalking = true;
+  console.log(`[STT] Heard: "${userText}"`);
+
+  if (userText.length > 2) {
+    try {
+      
+      const response = await ai.chat.completions.create({
+        model: 'abacusai/dracarys-llama-3.1-70b-instruct',
+        messages: [
+          {
+            role: 'system',
+            content: activeChar.prompt
+          },
+          {
+            role: 'user',
+            content: msg.content
+          }
+        ],
+        temperature: 0.8,
+        max_tokens: 150
+      });
+
+      const reply = response.choices[0].message.content;
+      console.log(`[AI Reply] (${activeChar.name}): ${reply}`);
+
+      // Language detection for Tamil (Basic check)
+      const isTamil = /[\u0B80-\u0BFF]/.test(reply);
+      const audioStream = await generateTTS(reply);
+      if (audioStream) {
+        const connection = getVoiceConnection(msg.guild.id);
+        if (connection) {
+          const player = getOrCreatePlayer(msg.guild.id, connection);
+          const resource = createAudioResource(audioStream, {
+            inputType: StreamType.Arbitrary,
+          });
+          
+          player.play(resource);
+
+          player.once(AudioPlayerStatus.Idle, () => {
+             isAITalking = false;
+          });
+          
+          player.once('error', (e) => {
+             console.error("[Voice] Player Error:", e);
+             isAITalking = false;
+          });
+        } else {
+          isAITalking = false;
+        }
+      } else {
+        isAITalking = false;
+      }
+    } catch (err) {
+      console.error('[Voice] Error processing speech:', err);
+      isAITalking = false;
+    }
+  } else {
+    isAITalking = false;
+  }
+});
